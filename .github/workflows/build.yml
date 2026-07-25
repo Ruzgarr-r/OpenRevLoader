@@ -1,0 +1,23 @@
+name: Build Windows App
+
+on: [push, workflow_dispatch]
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+    - name: Kodları Çek
+      uses: actions/checkout@v4
+
+    - name: MSBuild Kur
+      uses: microsoft/setup-msbuild@v2
+
+    - name: Projeyi Derle
+      run: msbuild revLoader.sln /p:Configuration=Release
+
+    - name: EXE Dosyasını Çıktı Al
+      uses: actions/upload-artifact@v4
+      with:
+        name: revLoader-Compiled
+        path: "**/Release/*.exe"
