@@ -3,10 +3,12 @@
 #include <Windows.h>
 #include <iostream>
 #include <io.h>
+#include <shellapi.h>
 
 char g_LauncherDir[MAX_PATH] = {};
 char g_RevIniName[MAX_PATH] = {};
 char g_ProcName[MAX_PATH] = {};
+char g_ProcArgs[MAX_PATH] = {};
 char g_LibraryName[MAX_PATH] = {};
 
 char g_GameAppId[256] = {};
@@ -15,29 +17,33 @@ wchar_t **g_Argv = nullptr;
 char g_AdditionalProcName[MAX_PATH] = {};
 int g_NumArgs = 0;
 
-bool GetSteamAppID(char *pszOut)
+// steam_appid.txt okuma fonksiyonu (Güvenli ve esnek)
+bool GetSteamAppID(char *pszOut, size_t maxLen)
 {
 	FILE* f = fopen("steam_appid.txt", "r");
 	if (!f)
 	{
-		*pszOut = '\0';
+		if (pszOut && maxLen > 0) *pszOut = '\0';
 		return false;
 	}
 
-	int fno = _fileno(f);
-	int flen = _filelength(fno);
-	fread(pszOut, sizeof(pszOut[0]), flen, f);
-	fclose(f);
-
-	char *psz = strchr(pszOut, ' ');
-	if (psz)
+	if (fgets(pszOut, (int)maxLen, f) != NULL)
 	{
-		*psz = '\0';
+		char *psz = strpbrk(pszOut, "\r\n\t ");
+		if (psz)
+		{
+			*psz = '\0';
+		}
+		fclose(f);
+		return (strlen(pszOut) > 0);
 	}
 
-	return true;
+	fclose(f);
+	if (pszOut && maxLen > 0) *pszOut = '\0';
+	return false;
 }
 
+// Paylaşılan bellek ve kilit mekanizması
 void CreateSharedMemFile(HANDLE *hMapView, HANDLE *hFileMap, HANDLE *hEvent)
 {
 	char szDest[260];
@@ -47,7 +53,8 @@ void CreateSharedMemFile(HANDLE *hMapView, HANDLE *hFileMap, HANDLE *hEvent)
 	if (!*hFileMap)
 	{
 		sprintf(szDest, "Unable to CreateFileMapping: %i", GetLastError());
-		MessageBoxA(HWND_DESKTOP, szDest, "a", MB_OK);
+		MessageBoxA(HWND_DESKTOP, szDest, "Error", MB_OK | MB_ICONERROR);
+		return;
 	}
 	
 	*hMapView = MapViewOfFile(*hFileMap, SECTION_ALL_ACCESS, 0, 0, 0);
@@ -55,8 +62,10 @@ void CreateSharedMemFile(HANDLE *hMapView, HANDLE *hFileMap, HANDLE *hEvent)
 	if (!*hMapView)
 	{
 		sprintf(szDest, "Unable to MapViewOfFile: %i", GetLastError());
-		MessageBoxA(HWND_DESKTOP, szDest, "a", MB_OK);
+		MessageBoxA(HWND_DESKTOP, szDest, "Error", MB_OK | MB_ICONERROR);
 		CloseHandle(*hFileMap);
+		*hFileMap = NULL;
+		return;
 	}
 
 	*hEvent = CreateEventA(NULL, FALSE, FALSE, "Local\\SteamStart_SharedMemLock");
@@ -64,66 +73,155 @@ void CreateSharedMemFile(HANDLE *hMapView, HANDLE *hFileMap, HANDLE *hEvent)
 	if (!*hEvent)
 	{
 		sprintf(szDest, "Unable to CreateEvent: %i", GetLastError());
-		MessageBoxA(HWND_DESKTOP, szDest, "a", MB_OK);
+		MessageBoxA(HWND_DESKTOP, szDest, "Error", MB_OK | MB_ICONERROR);
+		UnmapViewOfFile(*hMapView);
 		CloseHandle(*hFileMap);
-		CloseHandle(*hMapView);
+		*hFileMap = NULL;
+		*hMapView = NULL;
+		return;
 	}
 
 	SetEvent(*hEvent);
 }
 
+// Registry'e aktif Steam sürecini kaydetme
 void SetActiveProcess(int pid)
 {
 	DWORD dwD;
 	HKEY phkResult;
 
-	if (RegOpenKeyExA(HKEY_CURRENT_USER, "Software\\Valve\\Steam\\ActiveProcess", 0, KEY_WRITE, &phkResult))
+	if (RegOpenKeyExA(HKEY_CURRENT_USER, "Software\\Valve\\Steam\\ActiveProcess", 0, KEY_WRITE, &phkResult) != ERROR_SUCCESS)
 		RegCreateKeyExA(HKEY_CURRENT_USER, "Software\\Valve\\Steam\\ActiveProcess", 0, NULL, 0, KEY_WRITE, NULL, &phkResult, &dwD);
 
 	RegSetValueExA(phkResult, "pid", 0, REG_DWORD, (BYTE *)&pid, sizeof(pid));
+	RegSetValueExA(phkResult, "SteamPath", 0, REG_SZ, (BYTE *)g_LauncherDir, (DWORD)strlen(g_LauncherDir) + 1);
 	RegCloseKey(phkResult);
 }
 
+// Registry'e SteamClientDll kaydetme
 void SetSteamClientDll(char *pszLib)
 {
 	DWORD dwD;
 	HKEY phkResult;
 
-	if (RegOpenKeyExA(HKEY_CURRENT_USER, "Software\\Valve\\Steam\\ActiveProcess", 0, KEY_WRITE, &phkResult))
+	if (RegOpenKeyExA(HKEY_CURRENT_USER, "Software\\Valve\\Steam\\ActiveProcess", 0, KEY_WRITE, &phkResult) != ERROR_SUCCESS)
 		RegCreateKeyExA(HKEY_CURRENT_USER, "Software\\Valve\\Steam\\ActiveProcess", 0, NULL, 0, KEY_WRITE, NULL, &phkResult, &dwD);
 
-	RegSetValueExA(phkResult, "SteamClientDll", 0, REG_SZ, (BYTE *)pszLib, strlen(pszLib) + 1);
+	RegSetValueExA(phkResult, "SteamClientDll", 0, REG_SZ, (BYTE *)pszLib, (DWORD)strlen(pszLib) + 1);
 	RegCloseKey(phkResult);
 }
 
+// Hedef sürece DLL enjekte etme fonksiyonu
+bool InjectDLL(HANDLE hProcess, const char* szDllPath)
+{
+	if (!szDllPath || szDllPath[0] == '\0') return false;
+
+	if (GetFileAttributesA(szDllPath) == INVALID_FILE_ATTRIBUTES) return false;
+
+	LPVOID pLoadLibrary = (LPVOID)GetProcAddress(GetModuleHandleA("kernel32.dll"), "LoadLibraryA");
+	if (!pLoadLibrary) return false;
+
+	SIZE_T len = strlen(szDllPath) + 1;
+	LPVOID pRemoteMem = VirtualAllocEx(hProcess, NULL, len, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+	if (!pRemoteMem) return false;
+
+	if (!WriteProcessMemory(hProcess, pRemoteMem, szDllPath, len, NULL))
+	{
+		VirtualFreeEx(hProcess, pRemoteMem, 0, MEM_RELEASE);
+		return false;
+	}
+
+	HANDLE hThread = CreateRemoteThread(hProcess, NULL, 0, (LPTHREAD_START_ROUTINE)pLoadLibrary, pRemoteMem, 0, NULL);
+	if (!hThread)
+	{
+		VirtualFreeEx(hProcess, pRemoteMem, 0, MEM_RELEASE);
+		return false;
+	}
+
+	WaitForSingleObject(hThread, INFINITE);
+	VirtualFreeEx(hProcess, pRemoteMem, 0, MEM_RELEASE);
+	CloseHandle(hThread);
+	return true;
+}
+
+// Oyunu Başlatma Fonksiyonu
 void StartGameApp()
 {
-	HANDLE hFileMap = 0;
-	HANDLE hMapView = 0;
-	HANDLE hSteamMem = 0;
+	HANDLE hFileMap = NULL;
+	HANDLE hMapView = NULL;
+	HANDLE hSteamMem = NULL;
 	CreateSharedMemFile(&hMapView, &hFileMap, &hSteamMem);
 
 	STARTUPINFOA StartupInformation = {};
 	PROCESS_INFORMATION ProcessInformation = {};
-
 	StartupInformation.cb = sizeof(StartupInformation);
 
-	if (CreateProcessA(NULL, g_ProcName, NULL, NULL, FALSE, 0, NULL, NULL, &StartupInformation, &ProcessInformation))
+	char szFullCmd[2048] = {};
+	char szExePath[MAX_PATH] = {};
+
+	if (strchr(g_ProcName, '\\') == NULL && strchr(g_ProcName, '/') == NULL)
+	{
+		sprintf(szExePath, "%s%s", g_LauncherDir, g_ProcName);
+	}
+	else
+	{
+		strcpy(szExePath, g_ProcName);
+	}
+
+	if (g_ProcArgs[0] != '\0')
+	{
+		sprintf(szFullCmd, "\"%s\" %s", szExePath, g_ProcArgs);
+	}
+	else
+	{
+		sprintf(szFullCmd, "\"%s\"", szExePath);
+	}
+
+	BOOL bCreated = CreateProcessA(
+		szExePath,
+		szFullCmd,
+		NULL,
+		NULL,
+		FALSE,
+		CREATE_SUSPENDED,
+		NULL,
+		g_LauncherDir,
+		&StartupInformation,
+		&ProcessInformation
+	);
+
+	if (bCreated)
 	{
 		SetActiveProcess(ProcessInformation.dwProcessId);
 
-		WaitForSingleObject(ProcessInformation.hThread, INFINITE);
-		if (hSteamMem)
-			CloseHandle(hSteamMem);
-		if (hMapView)
-			CloseHandle(hMapView);
-		if (hFileMap)
-			CloseHandle(hFileMap);
+		// Overlay / DLL Injection
+		char szOverlayDll[MAX_PATH] = {};
+		if (GetPrivateProfileStringA("Loader", "OverlayDLL", "", szOverlayDll, sizeof(szOverlayDll), g_RevIniName))
+		{
+			if (szOverlayDll[0] != '\0')
+			{
+				char szFullOverlayPath[MAX_PATH];
+				sprintf(szFullOverlayPath, "%s%s", g_LauncherDir, szOverlayDll);
+				InjectDLL(ProcessInformation.hProcess, szFullOverlayPath);
+			}
+		}
+
+		ResumeThread(ProcessInformation.hThread);
+
+		// Ana sürecin kapanmasını bekle
+		WaitForSingleObject(ProcessInformation.hProcess, INFINITE);
+
+		CloseHandle(ProcessInformation.hThread);
+		CloseHandle(ProcessInformation.hProcess);
+
+		if (hSteamMem) CloseHandle(hSteamMem);
+		if (hMapView) UnmapViewOfFile(hMapView);
+		if (hFileMap) CloseHandle(hFileMap);
 	}
 	else
 	{
 		char szDest[512];
-		sprintf(szDest, "Unable to execute command %s (%d)", g_ProcName, GetLastError());
+		sprintf(szDest, "Unable to execute command: %s (Error Code: %d)\nWorking Dir: %s", szExePath, GetLastError(), g_LauncherDir);
 		MessageBoxA(HWND_DESKTOP, szDest, "Error", MB_ICONWARNING | MB_SYSTEMMODAL);
 	}
 }
@@ -137,63 +235,88 @@ int WINAPI WinMain(
 {
 	if (!GetModuleFileNameA(NULL, g_LauncherDir, sizeof(g_LauncherDir)))
 	{
-		MessageBoxA(HWND_DESKTOP, "Unable to initialize the process", "Error", MB_ICONWARNING | MB_SYSTEMMODAL);
+		MessageBoxA(HWND_DESKTOP, "Unable to initialize the process path", "Error", MB_ICONWARNING | MB_SYSTEMMODAL);
 		return -1;
 	}
 
-	char *psz = strrchr(g_LauncherDir, '\\') + 1;
-	*psz = '\0';
+	char *psz = strrchr(g_LauncherDir, '\\');
+	if (psz)
+	{
+		*(psz + 1) = '\0';
+	}
 
 	strcpy(g_RevIniName, g_LauncherDir);
 	strcat(g_RevIniName, "rev.ini");
 
 	g_Argv = CommandLineToArgvW(GetCommandLineW(), &g_NumArgs);
 
-	for (int i = 0; i < g_NumArgs; i++)
+	if (g_Argv)
 	{
-		if (_wcsicmp(g_Argv[i], L"-launch") == 0)
+		for (int i = 0; i < g_NumArgs; i++)
 		{
-			wcstombs(g_ProcName, g_Argv[i++ + 1], sizeof(g_ProcName) - 1);
-		}
-		else if (_wcsicmp(g_Argv[i], L"-appid") == 0)
-		{
-			wcstombs(g_GameAppId, g_Argv[i++ + 1], sizeof(g_GameAppId) - 1);
-		}
-		else
-		{
-			if (i != 0)
+			if (_wcsicmp(g_Argv[i], L"-launch") == 0 && (i + 1 < g_NumArgs))
 			{
-				char szArg[128];
-				wcstombs(szArg, g_Argv[i], sizeof(szArg) - 1);
-				strcat(g_AdditionalProcName, szArg);
-				strcat(g_AdditionalProcName, " ");
+				wcstombs(g_ProcName, g_Argv[++i], sizeof(g_ProcName) - 1);
+			}
+			else if (_wcsicmp(g_Argv[i], L"-appid") == 0 && (i + 1 < g_NumArgs))
+			{
+				wcstombs(g_GameAppId, g_Argv[++i], sizeof(g_GameAppId) - 1);
+			}
+			else
+			{
+				if (i != 0)
+				{
+					char szArg[128];
+					wcstombs(szArg, g_Argv[i], sizeof(szArg) - 1);
+					if (g_AdditionalProcName[0] != '\0') strcat(g_AdditionalProcName, " ");
+					strcat(g_AdditionalProcName, szArg);
+				}
 			}
 		}
+		LocalFree(g_Argv);
 	}
 
-	if (strlen(g_AdditionalProcName) != 0)
-		strcat(g_ProcName, g_AdditionalProcName);
+	if (g_ProcName[0] == '\0')
+	{
+		GetPrivateProfileStringA("Loader", "ProcName", "", g_ProcName, sizeof(g_ProcName), g_RevIniName);
+	}
 
-	if (!GetPrivateProfileStringA("Loader", "ProcName", "", g_ProcName, sizeof(g_ProcName), g_RevIniName))
+	GetPrivateProfileStringA("Loader", "ProcArgs", "", g_ProcArgs, sizeof(g_ProcArgs), g_RevIniName);
+
+	if (strlen(g_AdditionalProcName) != 0)
+	{
+		if (g_ProcArgs[0] != '\0') strcat(g_ProcArgs, " ");
+		strcat(g_ProcArgs, g_AdditionalProcName);
+	}
+
+	if (g_ProcName[0] == '\0')
 	{
 		MessageBoxA(HWND_DESKTOP, "ProcName value not found on command line or in rev.ini. Please edit the file.", 
 			"Error", MB_ICONWARNING | MB_SYSTEMMODAL);
 		return -1;
 	}
 
-	if (!GetSteamAppID(g_GameAppId))
+	if (g_GameAppId[0] == '\0')
 	{
-		MessageBoxA(HWND_DESKTOP, "No steam_appid.txt detected, the game might not launch correctly", 
-			"Warning", MB_ICONWARNING | MB_SYSTEMMODAL);
+		if (!GetSteamAppID(g_GameAppId, sizeof(g_GameAppId)))
+		{
+			GetPrivateProfileStringA("Steam", "AppId", "", g_GameAppId, sizeof(g_GameAppId), g_RevIniName);
+			if (g_GameAppId[0] == '\0')
+			{
+				GetPrivateProfileStringA("Loader", "AppId", "", g_GameAppId, sizeof(g_GameAppId), g_RevIniName);
+			}
+		}
 	}
 
 	if (g_GameAppId[0] != '\0')
 	{
 		SetEnvironmentVariableA("SteamGameId", g_GameAppId);
 		SetEnvironmentVariableA("SteamAppId", g_GameAppId);
+		SetEnvironmentVariableA("SteamOverlayGameId", g_GameAppId);
 	}
+	SetEnvironmentVariableA("SteamPath", g_LauncherDir);
 
-	char szSteamClientDll[MAX_PATH];
+	char szSteamClientDll[MAX_PATH] = {};
 	if (GetPrivateProfileStringA("Loader", "SteamClientDll", "", szSteamClientDll, sizeof(szSteamClientDll), g_RevIniName))
 	{
 		if (szSteamClientDll[0] != '\0')
@@ -201,27 +324,26 @@ int WINAPI WinMain(
 			strcpy(g_LibraryName, g_LauncherDir);
 			strcat(g_LibraryName, szSteamClientDll);
 
-			if (!LoadLibraryA(g_LibraryName))
+			if (LoadLibraryA(g_LibraryName))
+			{
+				SetSteamClientDll(g_LibraryName);
+			}
+			else
 			{
 				char szDest[512];
-				sprintf(szDest, "Can't find steamclient.dll relative to executable path %s", g_LauncherDir);
+				sprintf(szDest, "Warning: Can't load SteamClientDll (%s) relative to executable path %s", szSteamClientDll, g_LauncherDir);
 				MessageBoxA(HWND_DESKTOP, szDest, "Warning", MB_ICONWARNING | MB_SYSTEMMODAL);
-				return -1;
 			}
-
-			SetSteamClientDll(g_LibraryName);
 		}
 	}
 
+	// steam.dll (Opsiyonel)
 	strcpy(g_LibraryName, g_LauncherDir);
 	strcat(g_LibraryName, "steam.dll");
 
 	if (!LoadLibraryA(g_LibraryName))
 	{
-		char szDest[512];
-		sprintf(szDest, "Can't find steam.dll relative to executable path %s", g_LauncherDir);
-		MessageBoxA(HWND_DESKTOP, szDest, "Warning", MB_ICONWARNING | MB_SYSTEMMODAL);
-		return -1;
+		OutputDebugStringA("steam.dll not found, continuing without it.\n");
 	}
 
 	StartGameApp();
