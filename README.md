@@ -1,4 +1,3 @@
-google-site-verification: googlef111f4c2f80dd0c7.html
 # OpenRevLoader
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
