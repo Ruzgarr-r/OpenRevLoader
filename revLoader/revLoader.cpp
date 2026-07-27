@@ -17,7 +17,7 @@ wchar_t **g_Argv = nullptr;
 char g_AdditionalProcName[MAX_PATH] = {};
 int g_NumArgs = 0;
 
-// steam_appid.txt okuma fonksiyonu (Güvenli ve esnek)
+// steam_appid.txt okuma
 bool GetSteamAppID(char *pszOut, size_t maxLen)
 {
 	FILE* f = fopen("steam_appid.txt", "r");
@@ -43,7 +43,7 @@ bool GetSteamAppID(char *pszOut, size_t maxLen)
 	return false;
 }
 
-// Paylaşılan bellek ve kilit mekanizması
+// Shared Memory oluşturma
 void CreateSharedMemFile(HANDLE *hMapView, HANDLE *hFileMap, HANDLE *hEvent)
 {
 	char szDest[260];
@@ -53,7 +53,7 @@ void CreateSharedMemFile(HANDLE *hMapView, HANDLE *hFileMap, HANDLE *hEvent)
 	if (!*hFileMap)
 	{
 		sprintf(szDest, "Unable to CreateFileMapping: %i", GetLastError());
-		MessageBoxA(HWND_DESKTOP, szDest, "Error", MB_OK | MB_ICONERROR);
+		MessageBoxA(HWND_DESKTOP, szDest, "Error", MB_OK);
 		return;
 	}
 	
@@ -62,7 +62,7 @@ void CreateSharedMemFile(HANDLE *hMapView, HANDLE *hFileMap, HANDLE *hEvent)
 	if (!*hMapView)
 	{
 		sprintf(szDest, "Unable to MapViewOfFile: %i", GetLastError());
-		MessageBoxA(HWND_DESKTOP, szDest, "Error", MB_OK | MB_ICONERROR);
+		MessageBoxA(HWND_DESKTOP, szDest, "Error", MB_OK);
 		CloseHandle(*hFileMap);
 		*hFileMap = NULL;
 		return;
@@ -73,7 +73,7 @@ void CreateSharedMemFile(HANDLE *hMapView, HANDLE *hFileMap, HANDLE *hEvent)
 	if (!*hEvent)
 	{
 		sprintf(szDest, "Unable to CreateEvent: %i", GetLastError());
-		MessageBoxA(HWND_DESKTOP, szDest, "Error", MB_OK | MB_ICONERROR);
+		MessageBoxA(HWND_DESKTOP, szDest, "Error", MB_OK);
 		UnmapViewOfFile(*hMapView);
 		CloseHandle(*hFileMap);
 		*hFileMap = NULL;
@@ -84,7 +84,7 @@ void CreateSharedMemFile(HANDLE *hMapView, HANDLE *hFileMap, HANDLE *hEvent)
 	SetEvent(*hEvent);
 }
 
-// Registry'e aktif Steam sürecini kaydetme
+// ActiveProcess Registry ayarları
 void SetActiveProcess(int pid)
 {
 	DWORD dwD;
@@ -111,40 +111,7 @@ void SetSteamClientDll(char *pszLib)
 	RegCloseKey(phkResult);
 }
 
-// Hedef sürece DLL enjekte etme fonksiyonu
-bool InjectDLL(HANDLE hProcess, const char* szDllPath)
-{
-	if (!szDllPath || szDllPath[0] == '\0') return false;
-
-	if (GetFileAttributesA(szDllPath) == INVALID_FILE_ATTRIBUTES) return false;
-
-	LPVOID pLoadLibrary = (LPVOID)GetProcAddress(GetModuleHandleA("kernel32.dll"), "LoadLibraryA");
-	if (!pLoadLibrary) return false;
-
-	SIZE_T len = strlen(szDllPath) + 1;
-	LPVOID pRemoteMem = VirtualAllocEx(hProcess, NULL, len, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
-	if (!pRemoteMem) return false;
-
-	if (!WriteProcessMemory(hProcess, pRemoteMem, szDllPath, len, NULL))
-	{
-		VirtualFreeEx(hProcess, pRemoteMem, 0, MEM_RELEASE);
-		return false;
-	}
-
-	HANDLE hThread = CreateRemoteThread(hProcess, NULL, 0, (LPTHREAD_START_ROUTINE)pLoadLibrary, pRemoteMem, 0, NULL);
-	if (!hThread)
-	{
-		VirtualFreeEx(hProcess, pRemoteMem, 0, MEM_RELEASE);
-		return false;
-	}
-
-	WaitForSingleObject(hThread, INFINITE);
-	VirtualFreeEx(hProcess, pRemoteMem, 0, MEM_RELEASE);
-	CloseHandle(hThread);
-	return true;
-}
-
-// Oyunu Başlatma Fonksiyonu
+// Oyunu Başlatma
 void StartGameApp()
 {
 	HANDLE hFileMap = NULL;
@@ -183,7 +150,7 @@ void StartGameApp()
 		NULL,
 		NULL,
 		FALSE,
-		CREATE_SUSPENDED,
+		0,
 		NULL,
 		g_LauncherDir,
 		&StartupInformation,
@@ -194,21 +161,6 @@ void StartGameApp()
 	{
 		SetActiveProcess(ProcessInformation.dwProcessId);
 
-		// Overlay / DLL Injection
-		char szOverlayDll[MAX_PATH] = {};
-		if (GetPrivateProfileStringA("Loader", "OverlayDLL", "", szOverlayDll, sizeof(szOverlayDll), g_RevIniName))
-		{
-			if (szOverlayDll[0] != '\0')
-			{
-				char szFullOverlayPath[MAX_PATH];
-				sprintf(szFullOverlayPath, "%s%s", g_LauncherDir, szOverlayDll);
-				InjectDLL(ProcessInformation.hProcess, szFullOverlayPath);
-			}
-		}
-
-		ResumeThread(ProcessInformation.hThread);
-
-		// Ana sürecin kapanmasını bekle
 		WaitForSingleObject(ProcessInformation.hProcess, INFINITE);
 
 		CloseHandle(ProcessInformation.hThread);
@@ -296,6 +248,7 @@ int WINAPI WinMain(
 		return -1;
 	}
 
+	// AppID Kontrolü (steam_appid.txt öncelikli)
 	if (g_GameAppId[0] == '\0')
 	{
 		if (!GetSteamAppID(g_GameAppId, sizeof(g_GameAppId)))
@@ -316,7 +269,7 @@ int WINAPI WinMain(
 	}
 	SetEnvironmentVariableA("SteamPath", g_LauncherDir);
 
-	// SteamDll okuma (Öncelikli olarak SteamDll, alternatif olarak SteamClientDll kontrol edilir)
+	// 1. SteamDll (veya SteamClientDll) Yükleme
 	char szSteamDll[MAX_PATH] = {};
 	GetPrivateProfileStringA("Loader", "SteamDll", "", szSteamDll, sizeof(szSteamDll), g_RevIniName);
 	if (szSteamDll[0] == '\0')
@@ -326,28 +279,33 @@ int WINAPI WinMain(
 
 	if (szSteamDll[0] != '\0')
 	{
-		strcpy(g_LibraryName, g_LauncherDir);
-		strcat(g_LibraryName, szSteamDll);
+		char szRawPath[MAX_PATH];
+		sprintf(szRawPath, "%s%s", g_LauncherDir, szSteamDll);
+		GetFullPathNameA(szRawPath, MAX_PATH, g_LibraryName, NULL);
 
-		if (LoadLibraryA(g_LibraryName))
-		{
-			SetSteamClientDll(g_LibraryName);
-		}
-		else
+		if (!LoadLibraryA(g_LibraryName))
 		{
 			char szDest[512];
-			sprintf(szDest, "Warning: Can't load SteamDll (%s) relative to executable path %s", szSteamDll, g_LauncherDir);
+			sprintf(szDest, "Can't find %s relative to executable path %s", szSteamDll, g_LauncherDir);
 			MessageBoxA(HWND_DESKTOP, szDest, "Warning", MB_ICONWARNING | MB_SYSTEMMODAL);
+			return -1;
 		}
+
+		SetSteamClientDll(g_LibraryName);
 	}
 
-	// Opsiyonel varsayılan kök dizin steam.dll kontrolü
-	strcpy(g_LibraryName, g_LauncherDir);
-	strcat(g_LibraryName, "steam.dll");
+	// 2. Orijinal steam.dll Yükleme
+	char szSteamDllPath[MAX_PATH];
+	char szRawSteamPath[MAX_PATH];
+	sprintf(szRawSteamPath, "%ssteam.dll", g_LauncherDir);
+	GetFullPathNameA(szRawSteamPath, MAX_PATH, szSteamDllPath, NULL);
 
-	if (!LoadLibraryA(g_LibraryName))
+	if (!LoadLibraryA(szSteamDllPath))
 	{
-		OutputDebugStringA("steam.dll not found in root, continuing.\n");
+		char szDest[512];
+		sprintf(szDest, "Can't find steam.dll relative to executable path %s", g_LauncherDir);
+		MessageBoxA(HWND_DESKTOP, szDest, "Warning", MB_ICONWARNING | MB_SYSTEMMODAL);
+		return -1;
 	}
 
 	StartGameApp();
