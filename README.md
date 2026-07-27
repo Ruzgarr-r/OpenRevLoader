@@ -6,12 +6,13 @@
 
 **OpenRevLoader** (formerly *revLoader*) is an open-source, lightweight C++ loader and Steam emulation bridge designed for Valve's Source Engine games (such as *Team Fortress 2*, *Garry's Mod*, *Counter-Strike: Source*, and standalone mods).
 
-It handles process spawning, shared memory initialization, Steam registry key updates, AppID resolution, and essential Steam DLL loading for `revEmu`.
+It handles process spawning, shared memory initialization, Steam registry key updates, AppID resolution, multi-account profile selection, and essential Steam DLL loading for `revEmu`.
 
 ---
 
 ## Features:
 
+- **Interactive Multi-Account Picker**: Optional Win32/GDI+ profile selection GUI with custom square avatar (`.jpg`) rendering.
 - **Native Process Execution**: Spawns the target process directly via `CreateProcessA` without thread suspension or remote memory injection.
 - **Flexible Command Line Parsing**: Pass custom flags (`-launch`, `-appid`, etc.) directly via CLI or configure the target binary inside `rev.ini`.
 - **Direct AppID Resolution**: Automatically resolves the Steam AppID from `steam_appid.txt`.
@@ -21,12 +22,12 @@ It handles process spawning, shared memory initialization, Steam registry key up
 
 ---
 
-##  Building OpenRevLoader:
+## Building OpenRevLoader:
 
 ### MinGW / GCC
 ```bash
 # 32-bit (x86):
-g++ -O2 -s revLoader.cpp -o OpenRevLoader.exe -luser32 -lshell32 -m32
+g++ -O2 -s revLoader.cpp -o OpenRevLoader.exe -luser32 -lshell32 -lgdiplus -lgdi32 -lole32 -m32
 
 # 64-bit (x64):
-g++ -O2 -s revLoader.cpp -o OpenRevLoader.exe -luser32 -lshell32 -m64
+g++ -O2 -s revLoader.cpp -o OpenRevLoader.exe -luser32 -lshell32 -lgdiplus -lgdi32 -lole32 -m64
