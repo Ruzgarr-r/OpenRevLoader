@@ -1,20 +1,34 @@
 #define _CRT_SECURE_NO_WARNINGS	
 
 #include <Windows.h>
+#include <gdiplus.h>
 #include <iostream>
+#include <vector>
+#include <string>
+#include <sstream>
 #include <io.h>
+
+#pragma comment(lib, "gdiplus.lib")
+#pragma comment(lib, "gdi32.lib")
+
+using namespace Gdiplus;
 
 char g_LauncherDir[MAX_PATH] = {};
 char g_RevIniName[MAX_PATH] = {};
 char g_ProcName[MAX_PATH] = {};
 char g_LibraryName[MAX_PATH] = {};
-
 char g_GameAppId[256] = {};
 
 wchar_t **g_Argv = nullptr;
 char g_AdditionalProcName[MAX_PATH] = {};
 int g_NumArgs = 0;
 
+// Multi-Account Değişkenleri
+std::vector<std::string> g_AccountList;
+std::string g_SelectedAccount = "";
+bool g_AccountSelected = false;
+
+// steam_appid.txt okuma
 bool GetSteamAppID(char *pszOut)
 {
 	FILE* f = fopen("steam_appid.txt", "r");
@@ -38,6 +52,7 @@ bool GetSteamAppID(char *pszOut)
 	return true;
 }
 
+// Shared Memory oluşturma
 void CreateSharedMemFile(HANDLE *hMapView, HANDLE *hFileMap, HANDLE *hEvent)
 {
 	char szDest[260];
@@ -47,7 +62,7 @@ void CreateSharedMemFile(HANDLE *hMapView, HANDLE *hFileMap, HANDLE *hEvent)
 	if (!*hFileMap)
 	{
 		sprintf(szDest, "Unable to CreateFileMapping: %i", GetLastError());
-		MessageBoxA(HWND_DESKTOP, szDest, "a", MB_OK);
+		MessageBoxA(HWND_DESKTOP, szDest, "Error", MB_OK);
 	}
 	
 	*hMapView = MapViewOfFile(*hFileMap, SECTION_ALL_ACCESS, 0, 0, 0);
@@ -55,7 +70,7 @@ void CreateSharedMemFile(HANDLE *hMapView, HANDLE *hFileMap, HANDLE *hEvent)
 	if (!*hMapView)
 	{
 		sprintf(szDest, "Unable to MapViewOfFile: %i", GetLastError());
-		MessageBoxA(HWND_DESKTOP, szDest, "a", MB_OK);
+		MessageBoxA(HWND_DESKTOP, szDest, "Error", MB_OK);
 		CloseHandle(*hFileMap);
 	}
 
@@ -64,7 +79,7 @@ void CreateSharedMemFile(HANDLE *hMapView, HANDLE *hFileMap, HANDLE *hEvent)
 	if (!*hEvent)
 	{
 		sprintf(szDest, "Unable to CreateEvent: %i", GetLastError());
-		MessageBoxA(HWND_DESKTOP, szDest, "a", MB_OK);
+		MessageBoxA(HWND_DESKTOP, szDest, "Error", MB_OK);
 		CloseHandle(*hFileMap);
 		CloseHandle(*hMapView);
 	}
@@ -94,6 +109,156 @@ void SetSteamClientDll(char *pszLib)
 
 	RegSetValueExA(phkResult, "SteamClientDll", 0, REG_SZ, (BYTE *)pszLib, strlen(pszLib) + 1);
 	RegCloseKey(phkResult);
+}
+
+// Oyuncu Seçim Penceresi WndProc
+LRESULT CALLBACK AccountPickerProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
+{
+	switch (message)
+	{
+	case WM_PAINT:
+	{
+		PAINTSTRUCT ps;
+		HDC hdc = BeginPaint(hWnd, &ps);
+		Graphics graphics(hdc);
+
+		// Arka planı koyu gri yap
+		SolidBrush bgBrush(Color(255, 30, 30, 30));
+		graphics.FillRectangle(&bgBrush, 0, 0, 800, 600);
+
+		FontFamily fontFamily(L"Segoe UI");
+		Gdiplus::Font font(&fontFamily, 11, FontStyleBold, UnitPixel);
+		SolidBrush textBrush(Color(255, 240, 240, 240));
+		SolidBrush defaultAvatarBrush(Color(255, 70, 70, 70));
+		Pen borderPen(Color(255, 100, 100, 100), 2);
+
+		int xOffset = 30;
+		int yOffset = 30;
+		int boxWidth = 110;
+		int boxHeight = 110;
+		int padding = 25;
+
+		for (size_t i = 0; i < g_AccountList.size(); i++)
+		{
+			// Avatar Yolu: .\steam\OYUNCU.jpg
+			std::string imgPathStr = std::string(g_LauncherDir) + "steam\\" + g_AccountList[i] + ".jpg";
+			std::wstring wImgPath(imgPathStr.begin(), imgPathStr.end());
+
+			Image image(wImgPath.c_str());
+
+			// Kare Avatar Çizimi
+			if (image.GetLastStatus() == Ok)
+			{
+				graphics.DrawImage(&image, xOffset, yOffset, boxWidth, boxHeight);
+			}
+			else
+			{
+				// Avatar yoksa gri varsayılan kutu
+				graphics.FillRectangle(&defaultAvatarBrush, xOffset, yOffset, boxWidth, boxHeight);
+			}
+
+			// Çerçeve
+			graphics.DrawRectangle(&borderPen, xOffset, yOffset, boxWidth, boxHeight);
+
+			// Oyuncu İsmi Metni
+			std::wstring wName(g_AccountList[i].begin(), g_AccountList[i].end());
+			RectF textRect((REAL)xOffset - 10, (REAL)(yOffset + boxHeight + 5), (REAL)(boxWidth + 20), 25.0f);
+			
+			StringFormat format;
+			format.SetAlignment(StringAlignmentCenter);
+			graphics.DrawString(wName.c_str(), -1, &font, textRect, &format, &textBrush);
+
+			xOffset += boxWidth + padding;
+			if (xOffset + boxWidth > 580)
+			{
+				xOffset = 30;
+				yOffset += boxHeight + padding + 25;
+			}
+		}
+
+		EndPaint(hWnd, &ps);
+		break;
+	}
+	case WM_LBUTTONDOWN:
+	{
+		int xPos = LOWORD(lParam);
+		int yPos = HIWORD(lParam);
+
+		int xOffset = 30;
+		int yOffset = 30;
+		int boxWidth = 110;
+		int boxHeight = 110;
+		int padding = 25;
+
+		for (size_t i = 0; i < g_AccountList.size(); i++)
+		{
+			if (xPos >= xOffset && xPos <= (xOffset + boxWidth) &&
+				yPos >= yOffset && yPos <= (yOffset + boxHeight + 25))
+			{
+				g_SelectedAccount = g_AccountList[i];
+				g_AccountSelected = true;
+				DestroyWindow(hWnd);
+				break;
+			}
+
+			xOffset += boxWidth + padding;
+			if (xOffset + boxWidth > 580)
+			{
+				xOffset = 30;
+				yOffset += boxHeight + padding + 25;
+			}
+		}
+		break;
+	}
+	case WM_DESTROY:
+		PostQuitMessage(0);
+		break;
+	default:
+		return DefWindowProc(hWnd, message, wParam, lParam);
+	}
+	return 0;
+}
+
+// Oyuncu Seçim Diyaloğunu Başlatma
+bool ShowAccountPicker()
+{
+	WNDCLASSEXA wcex = {};
+	wcex.cbSize = sizeof(WNDCLASSEXA);
+	wcex.style = CS_HREDRAW | CS_VREDRAW;
+	wcex.lpfnWndProc = AccountPickerProc;
+	wcex.hInstance = GetModuleHandle(NULL);
+	wcex.hCursor = LoadCursor(NULL, IDC_ARROW);
+	wcex.lpszClassName = "OpenRevAccountPicker";
+
+	RegisterClassExA(&wcex);
+
+	int windowWidth = 600;
+	int windowHeight = 350;
+
+	HWND hWnd = CreateWindowExA(
+		WS_EX_TOPMOST,
+		"OpenRevAccountPicker",
+		"Select Profile - OpenRevLoader",
+		WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU,
+		(GetSystemMetrics(SM_CXSCREEN) - windowWidth) / 2,
+		(GetSystemMetrics(SM_CYSCREEN) - windowHeight) / 2,
+		windowWidth, windowHeight,
+		NULL, NULL, GetModuleHandle(NULL), NULL
+	);
+
+	if (!hWnd) return false;
+
+	ShowWindow(hWnd, SW_SHOW);
+	UpdateWindow(hWnd);
+
+	MSG msg;
+	while (GetMessage(&msg, NULL, 0, 0))
+	{
+		TranslateMessage(&msg);
+		DispatchMessage(&msg);
+	}
+
+	return g_AccountSelected;
 }
 
 void StartGameApp()
@@ -147,6 +312,52 @@ int WINAPI WinMain(
 	strcpy(g_RevIniName, g_LauncherDir);
 	strcat(g_RevIniName, "rev.ini");
 
+	// GDI+ Başlat
+	ULONG_PTR gdiplusToken;
+	GdiplusStartupInput gdiplusStartupInput;
+	GdiplusStartup(&gdiplusToken, &gdiplusStartupInput, NULL);
+
+	// MultiAcc Kontrolü
+	char szMultiAcc[16] = {};
+	GetPrivateProfileStringA("steamclient", "MultiAcc", "False", szMultiAcc, sizeof(szMultiAcc), g_RevIniName);
+
+	if (_stricmp(szMultiAcc, "True") == 0 || _stricmp(szMultiAcc, "1") == 0)
+	{
+		char szPlayerNames[1024] = {};
+		GetPrivateProfileStringA("steamclient", "PlayerNames", "", szPlayerNames, sizeof(szPlayerNames), g_RevIniName);
+
+		if (strlen(szPlayerNames) > 0)
+		{
+			std::stringstream ss(szPlayerNames);
+			std::string item;
+			while (std::getline(ss, item, ','))
+			{
+				// Boşlukları temizle
+				size_t start = item.find_first_not_of(" \t");
+				size_t end = item.find_last_not_of(" \t");
+				if (start != std::string::npos && end != std::string::npos)
+				{
+					g_AccountList.push_back(item.substr(start, end - start + 1));
+				}
+			}
+		}
+
+		if (!g_AccountList.empty())
+		{
+			if (ShowAccountPicker())
+			{
+				// Seçilen oyuncu adını rev.ini içerisine kaydet
+				WritePrivateProfileStringA("steamclient", "PlayerName", g_SelectedAccount.c_str(), g_RevIniName);
+			}
+			else
+			{
+				// Kullanıcı seçim yapmadan kapattıysa oyunu başlatma
+				GdiplusShutdown(gdiplusToken);
+				return 0;
+			}
+		}
+	}
+
 	g_Argv = CommandLineToArgvW(GetCommandLineW(), &g_NumArgs);
 
 	for (int i = 0; i < g_NumArgs; i++)
@@ -178,6 +389,7 @@ int WINAPI WinMain(
 	{
 		MessageBoxA(HWND_DESKTOP, "ProcName value not found on command line or in rev.ini. Please edit the file.", 
 			"Error", MB_ICONWARNING | MB_SYSTEMMODAL);
+		GdiplusShutdown(gdiplusToken);
 		return -1;
 	}
 
@@ -206,6 +418,7 @@ int WINAPI WinMain(
 				char szDest[512];
 				sprintf(szDest, "Can't find steamclient.dll relative to executable path %s", g_LauncherDir);
 				MessageBoxA(HWND_DESKTOP, szDest, "Warning", MB_ICONWARNING | MB_SYSTEMMODAL);
+				GdiplusShutdown(gdiplusToken);
 				return -1;
 			}
 
@@ -221,10 +434,12 @@ int WINAPI WinMain(
 		char szDest[512];
 		sprintf(szDest, "Can't find steam.dll relative to executable path %s", g_LauncherDir);
 		MessageBoxA(HWND_DESKTOP, szDest, "Warning", MB_ICONWARNING | MB_SYSTEMMODAL);
+		GdiplusShutdown(gdiplusToken);
 		return -1;
 	}
 
 	StartGameApp();
 
+	GdiplusShutdown(gdiplusToken);
 	return 0;
 }
