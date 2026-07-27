@@ -316,34 +316,38 @@ int WINAPI WinMain(
 	}
 	SetEnvironmentVariableA("SteamPath", g_LauncherDir);
 
-	char szSteamClientDll[MAX_PATH] = {};
-	if (GetPrivateProfileStringA("Loader", "SteamClientDll", "", szSteamClientDll, sizeof(szSteamClientDll), g_RevIniName))
+	// SteamDll okuma (Öncelikli olarak SteamDll, alternatif olarak SteamClientDll kontrol edilir)
+	char szSteamDll[MAX_PATH] = {};
+	GetPrivateProfileStringA("Loader", "SteamDll", "", szSteamDll, sizeof(szSteamDll), g_RevIniName);
+	if (szSteamDll[0] == '\0')
 	{
-		if (szSteamClientDll[0] != '\0')
-		{
-			strcpy(g_LibraryName, g_LauncherDir);
-			strcat(g_LibraryName, szSteamClientDll);
+		GetPrivateProfileStringA("Loader", "SteamClientDll", "", szSteamDll, sizeof(szSteamDll), g_RevIniName);
+	}
 
-			if (LoadLibraryA(g_LibraryName))
-			{
-				SetSteamClientDll(g_LibraryName);
-			}
-			else
-			{
-				char szDest[512];
-				sprintf(szDest, "Warning: Can't load SteamClientDll (%s) relative to executable path %s", szSteamClientDll, g_LauncherDir);
-				MessageBoxA(HWND_DESKTOP, szDest, "Warning", MB_ICONWARNING | MB_SYSTEMMODAL);
-			}
+	if (szSteamDll[0] != '\0')
+	{
+		strcpy(g_LibraryName, g_LauncherDir);
+		strcat(g_LibraryName, szSteamDll);
+
+		if (LoadLibraryA(g_LibraryName))
+		{
+			SetSteamClientDll(g_LibraryName);
+		}
+		else
+		{
+			char szDest[512];
+			sprintf(szDest, "Warning: Can't load SteamDll (%s) relative to executable path %s", szSteamDll, g_LauncherDir);
+			MessageBoxA(HWND_DESKTOP, szDest, "Warning", MB_ICONWARNING | MB_SYSTEMMODAL);
 		}
 	}
 
-	// steam.dll (Opsiyonel)
+	// Opsiyonel varsayılan kök dizin steam.dll kontrolü
 	strcpy(g_LibraryName, g_LauncherDir);
 	strcat(g_LibraryName, "steam.dll");
 
 	if (!LoadLibraryA(g_LibraryName))
 	{
-		OutputDebugStringA("steam.dll not found, continuing without it.\n");
+		OutputDebugStringA("steam.dll not found in root, continuing.\n");
 	}
 
 	StartGameApp();
