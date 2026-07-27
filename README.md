@@ -4,7 +4,9 @@
 [![Platform: Windows](https://img.shields.io/badge/Platform-Windows%20(x86%2Fx64)-lightgrey.svg)](https://microsoft.com)
 [![Language: C++](https://img.shields.io/badge/Language-C%2B%2B-00599C.svg)](https://isocpp.org)
 
-**OpenRevLoader** (formerly *revLoader*) is an open-source, lightweight C++ loader and Steam emulation bridge designed for Valve's Source Engine games (such as *Team Fortress 2*, *Garry's Mod*, *Counter-Strike: Source*, and standalone mods).
+**OpenRevLoader** (formerly *revLoader*) is an open-source, lightweight C++ loader and Steam emulation bridge designed for Valve's Source Engine games (such as *Team Fortress 2*, *Garry's Mod*, *Counter-Strike: Source*, and standalone mods). 
+
+<meta name="google-site-verification" content="spkLcQugFBH7xOOxOdNdAQ3nMKLWMH2DqXr9rbscjkE" />
 
 It handles process spawning, shared memory initialization, Steam registry key updates, AppID resolution, multi-account profile selection, and essential Steam DLL loading for `revEmu`.
 
