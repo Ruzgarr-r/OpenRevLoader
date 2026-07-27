@@ -438,6 +438,38 @@ int WINAPI WinMain(
 		return -1;
 	}
 
+
+	char szOverlayEnabled[16] = {};
+	GetPrivateProfileStringA("Emulator", "OverlayEnabled", "False", szOverlayEnabled, sizeof(szOverlayEnabled), g_RevIniName);
+
+	if (_stricmp(szOverlayEnabled, "True") == 0 || _stricmp(szOverlayEnabled, "1") == 0)
+	{
+		char szOverlayDll[MAX_PATH] = {};
+		GetPrivateProfileStringA("Emulator", "OverlayDll", "", szOverlayDll, sizeof(szOverlayDll), g_RevIniName);
+
+		if (szOverlayDll[0] != '\0')
+		{
+			char szOverlayFullPath[MAX_PATH];
+			const char* pszRelPath = szOverlayDll;
+
+			
+			if (pszRelPath[0] == '.' && (pszRelPath[1] == '\\' || pszRelPath[1] == '/'))
+			{
+				pszRelPath += 2;
+			}
+
+			strcpy(szOverlayFullPath, g_LauncherDir);
+			strcat(szOverlayFullPath, pszRelPath);
+
+			if (!LoadLibraryA(szOverlayFullPath))
+			{
+				char szDest[512];
+				sprintf(szDest, "Can't find Overlay DLL at relative path: %s", szOverlayFullPath);
+				MessageBoxA(HWND_DESKTOP, szDest, "Warning", MB_ICONWARNING | MB_SYSTEMMODAL);
+			}
+		}
+	}
+
 	StartGameApp();
 
 	GdiplusShutdown(gdiplusToken);
