@@ -12,6 +12,9 @@
 Things that i added to this fork:
 - Account selector when launching the game
 - Overlay DLL option (removed)
+- Removed the steam.dll requierement while launching the game
+- If appid not present from the `steamappid.txt` file, it will automatically search it under `rev.ini`
+- more (im'a add those later <3)
 
 
 <sub>Half Life 2 being runned by OpenRevLoader</sub>
